@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Google 日曆：我的日曆優先
 // @namespace    https://claudeD.local/gcal-collapse-my-calendars
-// @version      1.1.0
-// @description  側欄「我的日曆」預設收合；月檢視每天的事件把自己的日曆排在最上面，訂閱的（其他日曆）壓到下面
+// @version      1.2.0
+// @description  側欄「我的日曆」預設收合；月檢視每天的事件排序：自己的日曆 → 假日日曆 → 其他訂閱
 // @author       claudeD
 // @homepageURL  https://github.com/charles0506/gcal-collapse-my-calendars
 // @supportURL   https://github.com/charles0506/gcal-collapse-my-calendars/issues
@@ -117,14 +117,33 @@
     return m ? m[1].trim() : null; // null = 主日曆
   }
 
-  function isOther(chip, others) {
+  // 三層：0 自己的日曆（主日曆 + 側欄「我的日曆」那些）、1 假日日曆、2 其餘訂閱的。
+  // 假日那層用名稱比對，明年換成「2027台灣國定假日」之類也吃得到；
+  // 要自己指定就設 localStorage.gcalHolidayCalendars（字串陣列，比對用「包含」）。
+  const HOLIDAY_KEY = "gcalHolidayCalendars";
+  const DEFAULT_HOLIDAY = ["國定假日", "節慶假日", "holiday"];
+
+  function holidayPatterns() {
+    try {
+      const raw = localStorage.getItem(HOLIDAY_KEY);
+      const list = raw ? JSON.parse(raw) : null;
+      if (Array.isArray(list) && list.length) return list;
+    } catch (e) {
+      /* 壞掉就用預設 */
+    }
+    return DEFAULT_HOLIDAY;
+  }
+
+  function rankOf(chip, others, holidays) {
     const name = calendarOf(chip);
-    return !!name && others.includes(name);
+    if (!name || !others.includes(name)) return 0; // 主日曆或「我的日曆」裡的
+    const lower = name.toLowerCase();
+    return holidays.some((h) => lower.includes(String(h).toLowerCase())) ? 1 : 2;
   }
 
   // 月檢視一週是一個 div[role=row]，晶片絕對定位：left/width 是 7 欄的百分比，top 是第幾列（em）。
-  // 重排 = 依「自己的在前、其餘維持原順序」重新貪婪配位，跨天事件要整段欄位都空著才放得下。
-  function reorderRow(row, others) {
+  // 重排 = 依層級排序（同層維持原順序）重新貪婪配位，跨天事件要整段欄位都空著才放得下。
+  function reorderRow(row, others, holidays) {
     const chips = [...row.querySelectorAll("[data-eventchip]")].filter((c) => /em$/.test(c.style.top || ""));
     if (chips.length < 2) return;
 
@@ -134,11 +153,11 @@
       col: Math.round(parseFloat(chip.style.left) / COL_WIDTH),
       span: Math.max(1, Math.round(parseFloat(chip.style.width) / COL_WIDTH)),
       top: parseFloat(chip.style.top),
-      other: isOther(chip, others) ? 1 : 0,
+      rank: rankOf(chip, others, holidays),
     }));
 
     const order = [...items].sort(
-      (a, b) => a.other - b.other || a.top - b.top || a.col - b.col || a.index - b.index
+      (a, b) => a.rank - b.rank || a.top - b.top || a.col - b.col || a.index - b.index
     );
 
     const taken = [];
@@ -165,12 +184,13 @@
 
   function reorder() {
     const others = otherCalendars();
+    const holidays = holidayPatterns();
     const rows = new Set();
     for (const chip of document.querySelectorAll("[data-eventchip]")) {
       const row = chip.closest('div[role="row"]');
       if (row) rows.add(row);
     }
-    for (const row of rows) reorderRow(row, others);
+    for (const row of rows) reorderRow(row, others, holidays);
   }
 
   /* ---------- 觸發 ---------- */
